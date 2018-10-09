@@ -1,0 +1,257 @@
+= Gluster Volfiles generator
+
+A CLI tool to generate required Gluster Volfiles based on given
+Template. This tool works with both Glusterd and Glusterd2.
+
+== Install
+
+----
+git clone https://github.com/aravindavk/gluster-volgen.git 
+cd gluster-volgen
+PREFIX=/usr make
+PREFIX=/usr make install
+----
+
+== Usage
+
+----
+gluster-volgen --template=<template-path> --output-file=<output-file> \
+    --volume=<volume-name>
+----
+
+Example:
+
+----
+gluster-volgen --template=client.json --output-file=gv1.client.vol \
+    --volume=gv1
+----
+
+See below for example templates.
+
+By default it looks for Volume info by running `gluster volume info
+--xml` command. Use `--gluster-mgmt=glusterd2` if Glusterd2 is used
+for managing Gluster Volumes.
+
+----
+gluster-volgen --template=client.json --output-file=gv1.client.vol \
+    --volume=gv1 --gluster-mgmt=glusterd2
+----
+
+When glusterd2 is used, `gluster-volgen` looks for
+`http://localhost:24007` endpoint. Following additional options
+available when used with Glusterd2.
+
+----
+--glusterd2-endpoint
+    REST API Endpoint if it is different from `http://localhost:24007`
+
+--glusterd2-user
+    If REST Authentication is used
+
+--glusterd2-secret
+    If REST Authentication is used
+
+--glusterd2-cacert
+    CA certificate Path if TLS is used
+
+--glusterd2-insecure
+    If TLS is used and insecure use
+----
+
+When `glusterd` is used, following customizations are available
+
+----
+--gluster-binary
+   Gluster binary path, default is `gluster`
+
+--gluster-remote-address
+    Remote address to use with Gluster CLI. For example,
+    `gluster volume info --remote-host=192.168.0.104`
+   Note: Glusterd port(`24007`) should be open in remote machine to
+   use this.
+----
+
+Static Volinfo can be provided to the tool if glusterd is not
+running.
+
+----
+gluster-volgen --template=client.json --output-file=gv1.client.vol \
+    --volume=gv1 --volinfo=static_volinfos.json
+----
+
+
+== Use case: Custom Glusterfs client
+
+* Create Gluster Volume using Glusterd/Glusterd2
+* Generate custom Volfile by providing the template
+* Mount the Gluster Volume using the generated template file.
+
+
+== Use case: Running brick processes without Glusterd running
+
+* Create a Gluster Volume and generate static volinfo file using
+  `gluster-volinfo` command provided.
+* Stop Glusterd/Glusterd2
+* Generate the brick Volfiles and Client Volfiles as required
+* Start the Brick processes in each node by passing the generated
+  Volfile
+* Mount the Volume using generated Client Volfile
+
+Note: First step also can be done without the need for Glusterd, but
+need to create brick directories manually and set required
+xattr(`volume-id`).
+
+
+=== Example Brick Template
+
+[source,json]
+----
+{
+    "name": "brick",
+    "level": "brick",
+    "xlators": [
+	{
+	    "type": "protocol/server"
+	},
+	{
+	    "type": "debug/io-stats",
+	    "name-tmpl": "{{ brick.path }}"
+	},
+	{
+	    "type": "features/index"
+	},
+	{
+	    "type": "features/barrier"
+	},
+	{
+	    "type": "performance/io-threads"
+	},
+	{
+	    "type": "features/upcall"
+	},
+	{
+	    "type": "features/locks"
+	},
+	{
+	    "type": "features/access-control"
+	},
+	{
+	    "type": "features/bitrot-stub"
+	},
+	{
+	    "type":           "features/changelog",
+	    "disabled":       true,
+	    "enable-by-option": true,
+	    "options": {
+		"capture-del-path": "on"
+	    }
+	},
+	{
+	    "type":     "features/arbiter",
+	    "disabled": true
+	},
+	{
+	    "type": "storage/posix"
+	}
+    ]
+}
+----
+
+
+=== Example Client Template
+
+[source,json]
+----
+{
+    "name": "fuse",
+    "level": "volume",
+    "xlators": [
+	{
+	    "type":     "debug/io-stats",
+	    "name-tmpl": "{{ volume.name }}",
+	    "options": {
+		"log-level": "DEBUG"
+	    }
+	},
+	{
+	    "type":           "features/read-only",
+	    "disabled":       true,
+	    "enable-by-option": true
+	},
+	{
+	    "type": "cluster/distribute"
+	}
+    ],
+    "subvol-graph-xlators": [
+	{
+	    "name-tmpl": "{{ subvol.name }}",
+	    "type-tmpl": "cluster/{{ subvol.type }}",
+	    "options": {
+		"afr-pending-xattr": "{{ subvol.afr-pending-xattr }}"
+	    }
+	}
+    ],
+    "brick-graph-xlators": [
+	{
+	    "type":     "protocol/client",
+	    "name-tmpl": "{{ subvol.name }}-client-{{ brick.index }}"
+	}
+    ]
+}
+----
+
+=== Example Self heal daemon Template
+
+[source,json]
+----
+{
+    "name":  "glustershd",
+    "level": "cluster",
+    "xlators": [
+	{
+	    "type": "debug/io-stats",
+	    "name-tmpl": "glustershd"
+	}
+    ],
+    "subvol-graph-xlators": [
+	{
+	    "type-tmpl": "cluster/{{ subvol.type }}",
+	    "options": {
+		"iam-self-heal-daemon": "yes",
+		"afr-pending-xattr":    "{{ subvol.afr-pending-xattr }}"
+	    }
+	}
+    ],
+    "brick-graph-xlators": [
+	{
+	    "type": "protocol/client"
+	}
+    ]
+}
+----
+
+== Template explained
+
+* **name** - Name of the template. If a Volume info contains a option
+    like `<template-name>.<option-name>=<value>` then that option will
+    be applied while generating the Volfile. For example, if Volinfo
+    Options contains `client.debug/io-stats.log-level="DEBUG"` then
+    `DEBUG` log level will be applied on client volfile.
+* **level** - Volfile level. Available choices are: "brick", "volume"
+    and "cluster"
+* **xlators** - Global list of xlators and its options to be loaded in
+    generated Volfile
+* **subvol-graph-xlators** -
+* **volume-graph-xlators** -
+* **brick-graph-xlators** -
+
+Xlator can have following fields
+
+* **type** - Xlator Type
+* **name-tmpl** - Name template, template variables will be
+    substituted during generation
+* **type-tmpl** - Type template
+* **disabled** - `true` if by default needs to be disabled
+* **enable-by-option**: set `true` if enabled state needs to be added
+    as xlator option in generated volfile.
+* **options** - Xlator default options
